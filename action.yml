@@ -1,5 +1,5 @@
-name: 'Kemocade VRC Group Tracker Action'
-description: 'GitHub Action for automatically tracking Group information from the VRChat API'
+name: 'Kemocade VRC Role Tracker Action'
+description: 'GitHub Action for automatically tracking information from the VRChat API'
 branding:
   icon: globe
   color: blue
