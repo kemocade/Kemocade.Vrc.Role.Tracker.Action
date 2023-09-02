@@ -1,6 +1,6 @@
 ﻿using CommandLine;
 
-namespace Kemocade.Vrc.Group.Tracker.Action;
+namespace Kemocade.Vrc.Role.Tracker.Action;
 
 internal record ActionInputs
 {

@@ -1,7 +1,6 @@
 ﻿using CommandLine;
 using Discord;
 using Discord.WebSocket;
-using Kemocade.Vrc.Group.Tracker.Action;
 using Kemocade.Vrc.Role.Tracker.Action;
 using OtpNet;
 using System.Text.Json;
@@ -40,7 +39,6 @@ if (parser.Errors.ToArray() is { Length: > 0 } errors)
 ActionInputs inputs = parser.Value;
 
 bool useGroups = !string.IsNullOrEmpty(inputs.Groups);
-bool useWorlds = !string.IsNullOrEmpty(inputs.Worlds);
 bool useDiscord = !string.IsNullOrEmpty(inputs.Bot) &&
     !string.IsNullOrEmpty(inputs.Discords) &&
     !string.IsNullOrEmpty(inputs.Channels);
@@ -48,8 +46,6 @@ bool useDiscord = !string.IsNullOrEmpty(inputs.Bot) &&
 // Parse delimeted inputs
 string[] groupIds = useGroups ?
      inputs.Groups.Split(',') : Array.Empty<string>();
-string[] worldIds = useWorlds ?
-     inputs.Worlds.Split(',') : Array.Empty<string>();
 ulong[] servers = useDiscord ?
      inputs.Discords.Split(',').Select(ulong.Parse).ToArray() : Array.Empty<ulong>();
 ulong[] channels = useDiscord ?
@@ -109,9 +105,8 @@ foreach (KeyValuePair<ulong, ulong> kvp in discordServerIdsToChannelIds )
     await WaitSeconds(5);
     WriteLine($"Got Discord Users: {serverUsers.Length}");
 
-    WriteLine($"Getting VRC-Discord connections from server {discordGuildId} channel {discordChannelId}...");
-
     // Get all messages from channel, try up to DISCORD_ATTEMPTS times if fails
+    WriteLine($"Getting VRC-Discord connections from server {discordGuildId} channel {discordChannelId}...");
     IEnumerable<IMessage> messages = null;
     for (int attempt = 0; messages is null && attempt < DISCORD_MAX_ATTEMPTS; attempt++)
     {
@@ -194,11 +189,11 @@ try
     AuthenticationApi authApi = new(config);
     UsersApi usersApi = new(config);
     GroupsApi groupsApi = new(config);
-    WorldsApi worldsApi = new(config);
 
     // Log in
     WriteLine("Logging in...");
     CurrentUser currentUser = authApi.GetCurrentUser();
+    await WaitSeconds(1);
 
     // Check if 2FA is needed
     if (currentUser == null)
@@ -221,6 +216,8 @@ try
         WriteLine("Using 2FA code...");
         authApi.Verify2FA(new(totp.ComputeTotp()));
         currentUser = authApi.GetCurrentUser();
+        await WaitSeconds(1);
+
         if (currentUser == null)
         {
             WriteLine("Failed to validate 2FA!");
@@ -285,16 +282,6 @@ try
         vrcGroupIdsToAllVrcRoles.Add(group.Id, groupRoles.ToArray());
     }
 
-    // Get all info from all tracked worlds
-    foreach (string worldId in worldIds)
-    {
-        // Get World
-        World world = worldsApi.GetWorld(worldId);
-        WriteLine($"Got World: {worldId}");
-        vrcWorldIdsToWorldModels.Add(worldId, world);
-        await WaitSeconds(1);
-    }
-
     // Pull Discord Users from the VRC API
     WriteLine("Getting Discord Users...");
     discordGuildIdsToVrcDisplayNamesToDiscordRoles =
@@ -307,10 +294,12 @@ try
         // Find the current Discord Guild's VRC User ID to Discord Role mapping
         Dictionary<string, SocketRole[]> vrcUserIdsToDiscordRoles =
             discordGuildIdsToVrcUserIdsToDiscordRoles[discordGuildId];
+        WriteLine($"Checking Discord Guild: {discordGuildId} ({vrcUserIdsToDiscordRoles.Keys.Count} Linked VRC Users)...");
 
         // Iterate over each VRC User ID in the Discord Guild
         foreach (string vrcUserId in vrcUserIdsToDiscordRoles.Keys)
         {
+            WriteLine($"Getting Discord Linked VRC User: {vrcUserId}...");
             // Get the current VRC User's information from the VRC API
             User user = usersApi.GetUser(vrcUserId);
             await WaitSeconds(1);
@@ -379,18 +368,6 @@ TrackedData data = new()
                                 .ToArray()
                         }
                     )
-            }
-        ),
-    VrcWorldsById = vrcWorldIdsToWorldModels.
-        ToDictionary
-        (
-            kvp => kvp.Key,
-            kvp => new TrackedVrcWorld
-            {
-                Name = kvp.Value.Name,
-                Visits = kvp.Value.Visits,
-                Favorites = kvp.Value.Favorites,
-                Occupants = kvp.Value.Occupants
             }
         ),
     DiscordServersById = discordGuildIdsToVrcDisplayNamesToDiscordRoles.ToDictionary
