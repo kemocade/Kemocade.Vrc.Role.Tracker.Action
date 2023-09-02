@@ -26,6 +26,9 @@ internal record TrackedData
     internal record TrackedVrcWorld
     {
         public required string Name { get; init; }
+        public required int Visits { get; init; }
+        public required int Favorites { get; init; }
+        public required int Occupants { get; init; }
     }
 
     internal record TrackedDiscordServer

@@ -392,7 +392,13 @@ TrackedData data = new()
         ToDictionary
         (
             kvp => kvp.Key,
-            kvp => new TrackedVrcWorld { Name = kvp.Value.Name }
+            kvp => new TrackedVrcWorld
+            {
+                Name = kvp.Value.Name,
+                Visits = kvp.Value.Visits,
+                Favorites = kvp.Value.Favorites,
+                Occupants = kvp.Value.Occupants
+            }
         ),
     DiscordServersById = discordGuildIdsToVrcDisplayNamesToDiscordRoles.ToDictionary
     (
