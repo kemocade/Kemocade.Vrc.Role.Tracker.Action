@@ -288,17 +288,10 @@ try
     // Get all info from all tracked worlds
     foreach (string worldId in worldIds)
     {
-        // Get group
+        // Get World
         World world = worldsApi.GetWorld(worldId);
-        int visits = world.Visits;
-
-        WriteLine($"Got World {worldId}");
-        WriteLine(Serialize(world));
-        // int memberCount = group.MemberCount;
-        // WriteLine($"Got Group {group.Name}, Members: {memberCount}");
-
+        WriteLine($"Got World: {worldId}");
         vrcWorldIdsToWorldModels.Add(worldId, world);
-
         await WaitSeconds(1);
     }
 
