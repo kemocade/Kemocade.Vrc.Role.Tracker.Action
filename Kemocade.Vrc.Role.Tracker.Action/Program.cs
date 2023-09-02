@@ -82,23 +82,25 @@ else
     WriteLine("Skipping Discord Integration...");
 }
 
-// Map Discord Servers to VRC IDs to Discord Roles
-Dictionary<ulong, (string Name, Dictionary<string, SocketRole[]> RoleMap)> discordServersRaw = new();
+// Map Discord Servers to Server Names, VRC User Roles, and All Roles
+Dictionary<ulong, string> discordGuildIdsToDiscordServerNames = new();
+Dictionary<ulong, Dictionary<string, SocketRole[]>> discordGuildIdsToVrcUserIdsToDiscordRoles = new();
+Dictionary<ulong, SocketRole[]> discordGuildIdsToAllDiscordRoles = new();
 for (int i = 0; i < servers.Length; i++)
 {
-    ulong server = servers[i];
-    ulong channel = channels[i];
+    ulong discordGuildId = servers[i];
+    ulong discordChannelId = channels[i];
 
-    WriteLine($"Getting Discord Users from server {server}...");
-    SocketGuild socketServer = _discordBot.GetGuild(server);
+    WriteLine($"Getting Discord Users from server {discordGuildId}...");
+    SocketGuild socketGuild = _discordBot.GetGuild(discordGuildId);
     await WaitSeconds(5);
-    SocketTextChannel socketChannel = socketServer.GetTextChannel(channel);
+    SocketTextChannel socketChannel = socketGuild.GetTextChannel(discordChannelId);
     await WaitSeconds(5);
-    IGuildUser[] serverUsers = (await socketServer.GetUsersAsync().FlattenAsync()).ToArray();
+    IGuildUser[] serverUsers = (await socketGuild.GetUsersAsync().FlattenAsync()).ToArray();
     await WaitSeconds(5);
     WriteLine($"Got Discord Users: {serverUsers.Length}");
 
-    WriteLine($"Getting VRC-Discord connections from server {server} channel {channel}...");
+    WriteLine($"Getting VRC-Discord connections from server {discordGuildId} channel {discordChannelId}...");
 
     // Get all messages from channel, try up to DISCORD_ATTEMPTS times if fails
     IEnumerable<IMessage> messages = null;
@@ -116,7 +118,7 @@ for (int i = 0; i < servers.Length; i++)
     }
 
     // Build a mapping of VRC IDs to Discord Roles that prevents duplicates in both directions
-    Dictionary<string, SocketRole[]> vrcIdsToDiscordRoles = messages
+    Dictionary<string, SocketRole[]> vrcUserIdsToDiscordRoles = messages
         // Validate VRC ID format
         .Where(m => TryGetVrcId(m, out _))
         // Prioritize the newest messages
@@ -140,17 +142,30 @@ for (int i = 0; i < servers.Length; i++)
             u => serverUsers
                 .First(su => su.Id == u.DiscordUser.Id)
                 .RoleIds
-                .Select(r => socketServer.GetRole(r))
+                .Select(r => socketGuild.GetRole(r))
                 .ToArray()
         );
 
-    WriteLine($"Got VRC-Discord connections: {vrcIdsToDiscordRoles.Count}");
-    discordServersRaw.Add(server, (socketServer.Name, vrcIdsToDiscordRoles));
+    WriteLine($"Got VRC-Discord connections: {vrcUserIdsToDiscordRoles.Count}");
+
+    // Store all gathered information about the Discord Server
+    discordGuildIdsToDiscordServerNames.Add(discordGuildId, socketGuild.Name);
+    discordGuildIdsToVrcUserIdsToDiscordRoles.Add(discordGuildId, vrcUserIdsToDiscordRoles);
+    discordGuildIdsToAllDiscordRoles.Add
+    (
+        discordGuildId,
+        vrcUserIdsToDiscordRoles
+            .SelectMany(kvp => kvp.Value)
+            .DistinctBy(r => r.Id)
+            .ToArray()
+    );
 }
 
 // Store data as it is collected from the API
-Dictionary<ulong, (string Name, SocketRole[] AllRoles, Dictionary<User, SocketRole[]> RoleMap)> discords = new();
-Dictionary<Group, (GroupMember[] Members, GroupRole[] Roles)> groups = new();
+Dictionary<ulong, Dictionary<User, SocketRole[]>> discordGuildIdsToVrcUsersToDiscordRoles = new();
+Dictionary<string, Group> vrcGroupIdsToGroupModels = new();
+Dictionary<string, Dictionary<User, string[]>> vrcGroupIdsToVrcUsersToVrcRoleIds = new();
+Dictionary<string, GroupRole[]> vrcGroupIdsToAllVrcRoles = new();
 // Handle API exceptions
 try
 {
@@ -208,12 +223,13 @@ try
         int memberCount = group.MemberCount;
         WriteLine($"Got Group {group.Name}, Members: {memberCount}");
 
-        // Get self and ensure self is in group
+        // Ensure the Local User is in the VRC Group
         GroupMyMember self = group.MyMember;
-        if (self == null)
+        if (self == null || self.Id != currentUser.Id)
         {
-            WriteLine("User must be a member of the group!");
+            WriteLine("Local User must be a member of the VRC Group!");
             Environment.Exit(2);
+            return;
         }
 
         // Get group members
@@ -229,58 +245,60 @@ try
             await WaitSeconds(1);
         }
 
-        // Get self group member and add to group members list
-        WriteLine("Getting Self...");
-        groupMembers.Add
-        (
-            new
+        // Map Group Members to Roles
+        Dictionary<User, string[]> groupUsersToVrcRoleIds =
+            groupMembers.ToDictionary
             (
-                self.Id,
-                self.GroupId,
-                self.UserId,
-                self.IsRepresenting,
-                new(currentUser.Id, currentUser.DisplayName),
-                self.RoleIds,
-                self.JoinedAt,
-                self.MembershipStatus,
-                self.Visibility,
-                self.IsSubscribedToAnnouncements
-            )
-        );
-        WriteLine($"Got Group Members: {groupMembers.Count}");
+                m => new User { Id = m.Id, DisplayName = m.User.DisplayName },
+                m => m.RoleIds.ToArray()
+            );
 
-        // Get group roles
+        // Add Self
+        groupUsersToVrcRoleIds
+            .Add
+            (
+                new User { Id = currentUser.Id, DisplayName = currentUser.DisplayName },
+                self.RoleIds.ToArray()
+            );
+        WriteLine($"Got Group Users: {groupUsersToVrcRoleIds.Keys.Count}");
+
+        // Get All Group Roles
         WriteLine("Getting Group Roles...");
         List<GroupRole> groupRoles = groupsApi.GetGroupRoles(groupId);
         WriteLine($"Got Group Roles: {groupRoles.Count}");
 
-        groups.Add(group, (groupMembers.ToArray(), groupRoles.ToArray()));
+        // Store all gathered information about the VRC Group
+        vrcGroupIdsToGroupModels.Add(groupId, group);
+        vrcGroupIdsToVrcUsersToVrcRoleIds.Add(groupId, groupUsersToVrcRoleIds);
+        vrcGroupIdsToAllVrcRoles.Add(group.Id, groupRoles.ToArray());
     }
 
     // Pull Discord Users from the VRC API
     WriteLine("Getting Discord Users...");
-    discords = discordServersRaw
-        .ToDictionary
-        (
-            d => d.Key,
-            d =>
-            (
-                d.Value.Name,
-                d.Value.RoleMap.Values
-                    .SelectMany(r => r)
-                    .DistinctBy(r => r.Id)
-                    .ToArray(),
-                new Dictionary<User, SocketRole[]>()
-            )
-        );
+    discordGuildIdsToVrcUsersToDiscordRoles = discordGuildIdsToDiscordServerNames
+        .Keys
+        .ToDictionary(d => d, d => new Dictionary<User, SocketRole[]>());
 
-    foreach (var outer in discordServersRaw)
+    // Iterate over each Discord Guild
+    foreach (ulong discordGuildId in discordGuildIdsToVrcUsersToDiscordRoles.Keys)
     {
-        foreach (var inner in outer.Value.RoleMap)
+        // Find the current Discord Guild's VRC User ID to Discord Role mapping
+        Dictionary<string, SocketRole[]> vrcUserIdsToDiscordRoles =
+            discordGuildIdsToVrcUserIdsToDiscordRoles[discordGuildId];
+
+        // Iterate over each VRC User ID in the Discord Guild
+        foreach (string vrcUserId in vrcUserIdsToDiscordRoles.Keys)
         {
-            User user = usersApi.GetUser(inner.Key);
+            // Get the current VRC User's information from the VRC API
+            User user = usersApi.GetUser(vrcUserId);
             await WaitSeconds(1);
-            discords[outer.Key].RoleMap.Add(user, inner.Value);
+
+            // Get the current VRC User's roles in the current Discord Guild
+            SocketRole[] discordRoles = vrcUserIdsToDiscordRoles[vrcUserId];
+
+            // Map the VRC User to their Discord Guild roles
+            discordGuildIdsToVrcUsersToDiscordRoles[discordGuildId]
+                .Add(user, discordRoles);
         }
     }
 }
@@ -293,35 +311,38 @@ catch (ApiException e)
     return;
 }
 
-string[] vrcUserDisplayNames = groups
-    .SelectMany(g => g.Value.Members)
-    .Select(u => u.User.DisplayName)
+// Combine all unique VRC Display Names across Groups and Discords
+string[] vrcUserDisplayNames = vrcGroupIdsToVrcUsersToVrcRoleIds
+    .SelectMany(g => g.Value.Keys)
+    .Select(u => u.DisplayName)
     .Concat
     (
-        discords.Values
-        .Select(s => s.RoleMap)
-        .SelectMany(s => s.Keys)
+        discordGuildIdsToVrcUsersToDiscordRoles.Values
+        .SelectMany(d => d.Keys)
         .Select(u => u.DisplayName)
     )
     .Distinct()
     .OrderBy(s => s)
     .ToArray();
 
+int GetVrcUserIndex(string displayName) =>
+    Array.IndexOf(vrcUserDisplayNames, displayName);
+
 TrackedData data = new()
 {
     VrcUserDisplayNames = vrcUserDisplayNames,
-    VrcGroupsById = groups
+    VrcGroupsById = vrcGroupIdsToVrcUsersToVrcRoleIds
         .ToDictionary
         (
-            g => g.Key.Id,
-            g => new TrackedData.TrackedVrcGroup
+            kvp => kvp.Key,
+            kvp => new TrackedData.TrackedVrcGroup
             {
-                Name = g.Key.Name,
-                VrcUsers = g.Value.Members
-                    .Select(m => Array.IndexOf(vrcUserDisplayNames, m.User.DisplayName))
+                Name = vrcGroupIdsToGroupModels[kvp.Key].Name,
+                VrcUsers = kvp.Value.Keys
+                    .Select(u => GetVrcUserIndex(u.DisplayName))
                     .Where(i => i != -1)
                     .ToArray(),
-                Roles = g.Value.Roles
+                Roles = vrcGroupIdsToAllVrcRoles[kvp.Key]
                     .ToDictionary
                     (
                         r => r.Id,
@@ -331,25 +352,25 @@ TrackedData data = new()
                             IsAdmin = r.Permissions.Contains(VRC_GROUP_OWNER),
                             IsModerator = r.Permissions.Contains(VRC_GROUP_OWNER) ||
                                 r.Permissions.Contains(VRC_GROUP_MODERATOR),
-                            VrcUsers = g.Value.Members
-                                .Where(m => m.RoleIds.Contains(r.Id))
-                                .Select(m => Array.IndexOf(vrcUserDisplayNames, m.User.DisplayName))
+                            VrcUsers = kvp.Value
+                                .Where(kvp2 => kvp2.Value.Contains(r.Id))
+                                .Select(kvp2 => GetVrcUserIndex(kvp2.Key.DisplayName))
                                 .ToArray()
                         }
                     )
             }
         ),
-    DiscordServersById = discords.ToDictionary
+    DiscordServersById = discordGuildIdsToVrcUsersToDiscordRoles.ToDictionary
     (
         d => d.Key.ToString(),
         d => new TrackedData.TrackedDiscordServer
         {
-            Name = d.Value.Name,
-            VrcUsers = d.Value.RoleMap
-                .Select(m => Array.IndexOf(vrcUserDisplayNames, m.Key.DisplayName))
+            Name = discordGuildIdsToDiscordServerNames[d.Key],
+            VrcUsers = discordGuildIdsToVrcUsersToDiscordRoles[d.Key]
+                .Select(m => GetVrcUserIndex(m.Key.DisplayName))
                 .Where(i => i != -1)
                 .ToArray(),
-            Roles = d.Value.AllRoles
+            Roles = discordGuildIdsToAllDiscordRoles[d.Key]
                 .ToDictionary
                 (
                     r => r.Id.ToString(),
@@ -359,9 +380,9 @@ TrackedData data = new()
                         IsAdmin = r.Permissions.Administrator,
                         IsModerator = r.Permissions.Administrator ||
                             r.Permissions.ModerateMembers,
-                        VrcUsers = d.Value.RoleMap.Keys
-                            .Where(u => d.Value.RoleMap[u].Any(rr => rr.Id == r.Id))
-                            .Select(u => Array.IndexOf(vrcUserDisplayNames, u.DisplayName))
+                        VrcUsers = discordGuildIdsToVrcUsersToDiscordRoles[d.Key]
+                            .Where(kvp => kvp.Value.Any(sr => sr.Id == r.Id))
+                            .Select(u => GetVrcUserIndex(u.Key.DisplayName))
                             .ToArray()
                     }
                 )
