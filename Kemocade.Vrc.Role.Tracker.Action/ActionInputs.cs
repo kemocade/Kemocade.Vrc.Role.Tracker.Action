@@ -4,10 +4,10 @@ namespace Kemocade.Vrc.Group.Tracker.Action;
 
 internal record ActionInputs
 {
-    [Option('w', "workspace", Required = true)]
+    [Option('W', "workspace", Required = true)]
     public string Workspace { get; init; } = null!;
 
-    [Option('o', "output", Required = true)]
+    [Option('O', "output", Required = true)]
     public string Output { get; init; } = null!;
 
     [Option('u', "username", Required = true)]
@@ -21,6 +21,9 @@ internal record ActionInputs
 
     [Option('g', "groups")]
     public string Groups { get; init; } = null!;
+
+    [Option('w', "worlds")]
+    public string Worlds { get; init; } = null!;
 
     [Option('b', "bot")]
     public string Bot { get; init; } = null!;

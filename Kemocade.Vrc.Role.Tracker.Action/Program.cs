@@ -9,6 +9,9 @@ using System.Text.Json.Serialization;
 using VRChat.API.Api;
 using VRChat.API.Client;
 using VRChat.API.Model;
+using static Kemocade.Vrc.Role.Tracker.Action.TrackedData;
+using static Kemocade.Vrc.Role.Tracker.Action.TrackedData.TrackedDiscordServer;
+using static Kemocade.Vrc.Role.Tracker.Action.TrackedData.TrackedVrcGroup;
 using static System.Console;
 using static System.IO.File;
 using static System.Text.Json.JsonSerializer;
@@ -37,6 +40,7 @@ if (parser.Errors.ToArray() is { Length: > 0 } errors)
 ActionInputs inputs = parser.Value;
 
 bool useGroups = !string.IsNullOrEmpty(inputs.Groups);
+bool useWorlds = !string.IsNullOrEmpty(inputs.Worlds);
 bool useDiscord = !string.IsNullOrEmpty(inputs.Bot) &&
     !string.IsNullOrEmpty(inputs.Discords) &&
     !string.IsNullOrEmpty(inputs.Channels);
@@ -44,18 +48,23 @@ bool useDiscord = !string.IsNullOrEmpty(inputs.Bot) &&
 // Parse delimeted inputs
 string[] groupIds = useGroups ?
      inputs.Groups.Split(',') : Array.Empty<string>();
+string[] worldIds = useWorlds ?
+     inputs.Worlds.Split(',') : Array.Empty<string>();
 ulong[] servers = useDiscord ?
      inputs.Discords.Split(',').Select(ulong.Parse).ToArray() : Array.Empty<ulong>();
 ulong[] channels = useDiscord ?
     inputs.Channels.Split(',').Select(ulong.Parse).ToArray() : Array.Empty<ulong>();
 
-// Ensure parallel arrays are equal
+// Ensure parallel Discord input arrays are equal lengths
 if (servers.Length != channels.Length)
 {
     WriteLine("Discord Servers Array and Channels Array must have the same Length!");
     Environment.Exit(2);
     return;
 }
+Dictionary<ulong, ulong> discordServerIdsToChannelIds =
+    Enumerable.Range(0, servers.Length)
+    .ToDictionary(i => servers[i],i => channels[i]);
 
 // Find Local Files
 DirectoryInfo workspace = new(inputs.Workspace);
@@ -86,10 +95,10 @@ else
 Dictionary<ulong, string> discordGuildIdsToDiscordServerNames = new();
 Dictionary<ulong, Dictionary<string, SocketRole[]>> discordGuildIdsToVrcUserIdsToDiscordRoles = new();
 Dictionary<ulong, SocketRole[]> discordGuildIdsToAllDiscordRoles = new();
-for (int i = 0; i < servers.Length; i++)
+foreach (KeyValuePair<ulong, ulong> kvp in discordServerIdsToChannelIds )
 {
-    ulong discordGuildId = servers[i];
-    ulong discordChannelId = channels[i];
+    ulong discordGuildId = kvp.Key;
+    ulong discordChannelId = kvp.Value;
 
     WriteLine($"Getting Discord Users from server {discordGuildId}...");
     SocketGuild socketGuild = _discordBot.GetGuild(discordGuildId);
@@ -162,10 +171,14 @@ for (int i = 0; i < servers.Length; i++)
 }
 
 // Store data as it is collected from the API
-Dictionary<ulong, Dictionary<User, SocketRole[]>> discordGuildIdsToVrcUsersToDiscordRoles = new();
+// Group Data
 Dictionary<string, Group> vrcGroupIdsToGroupModels = new();
-Dictionary<string, Dictionary<User, string[]>> vrcGroupIdsToVrcUsersToVrcRoleIds = new();
 Dictionary<string, GroupRole[]> vrcGroupIdsToAllVrcRoles = new();
+Dictionary<string, Dictionary<string, string[]>> vrcGroupIdsToVrcDisplayNamesToVrcRoleIds = new();
+// World Data
+Dictionary<string, World> vrcWorldIdsToWorldModels = new();
+// Discord Data
+Dictionary<ulong, Dictionary<string, SocketRole[]>> discordGuildIdsToVrcDisplayNamesToDiscordRoles = new();
 // Handle API exceptions
 try
 {
@@ -181,6 +194,7 @@ try
     AuthenticationApi authApi = new(config);
     UsersApi usersApi = new(config);
     GroupsApi groupsApi = new(config);
+    WorldsApi worldsApi = new(config);
 
     // Log in
     WriteLine("Logging in...");
@@ -211,6 +225,7 @@ try
         {
             WriteLine("Failed to validate 2FA!");
             Environment.Exit(2);
+            return;
         }
     }
     WriteLine($"Logged in as {currentUser.DisplayName}");
@@ -225,7 +240,7 @@ try
 
         // Ensure the Local User is in the VRC Group
         GroupMyMember self = group.MyMember;
-        if (self == null || self.Id != currentUser.Id)
+        if (self == null || self.UserId != currentUser.Id)
         {
             WriteLine("Local User must be a member of the VRC Group!");
             Environment.Exit(2);
@@ -246,21 +261,17 @@ try
         }
 
         // Map Group Members to Roles
-        Dictionary<User, string[]> groupUsersToVrcRoleIds =
+        Dictionary<string, string[]> groupDisplayNamesToVrcRoleIds =
             groupMembers.ToDictionary
             (
-                m => new User { Id = m.Id, DisplayName = m.User.DisplayName },
+                m => m.User.DisplayName,
                 m => m.RoleIds.ToArray()
             );
 
         // Add Self
-        groupUsersToVrcRoleIds
-            .Add
-            (
-                new User { Id = currentUser.Id, DisplayName = currentUser.DisplayName },
-                self.RoleIds.ToArray()
-            );
-        WriteLine($"Got Group Users: {groupUsersToVrcRoleIds.Keys.Count}");
+        groupDisplayNamesToVrcRoleIds
+            .Add(currentUser.DisplayName, self.RoleIds.ToArray());
+        WriteLine($"Got Group Users: {groupDisplayNamesToVrcRoleIds.Keys.Count}");
 
         // Get All Group Roles
         WriteLine("Getting Group Roles...");
@@ -269,18 +280,36 @@ try
 
         // Store all gathered information about the VRC Group
         vrcGroupIdsToGroupModels.Add(groupId, group);
-        vrcGroupIdsToVrcUsersToVrcRoleIds.Add(groupId, groupUsersToVrcRoleIds);
+        vrcGroupIdsToVrcDisplayNamesToVrcRoleIds
+            .Add(groupId, groupDisplayNamesToVrcRoleIds);
         vrcGroupIdsToAllVrcRoles.Add(group.Id, groupRoles.ToArray());
+    }
+
+    // Get all info from all tracked worlds
+    foreach (string worldId in worldIds)
+    {
+        // Get group
+        World world = worldsApi.GetWorld(worldId);
+        int visits = world.Visits;
+
+        WriteLine($"Got World {worldId}");
+        WriteLine(Serialize(world));
+        // int memberCount = group.MemberCount;
+        // WriteLine($"Got Group {group.Name}, Members: {memberCount}");
+
+        vrcWorldIdsToWorldModels.Add(worldId, world);
+
+        await WaitSeconds(1);
     }
 
     // Pull Discord Users from the VRC API
     WriteLine("Getting Discord Users...");
-    discordGuildIdsToVrcUsersToDiscordRoles = discordGuildIdsToDiscordServerNames
-        .Keys
-        .ToDictionary(d => d, d => new Dictionary<User, SocketRole[]>());
+    discordGuildIdsToVrcDisplayNamesToDiscordRoles =
+        discordGuildIdsToDiscordServerNames.Keys
+        .ToDictionary(d => d, d => new Dictionary<string, SocketRole[]>());
 
     // Iterate over each Discord Guild
-    foreach (ulong discordGuildId in discordGuildIdsToVrcUsersToDiscordRoles.Keys)
+    foreach (ulong discordGuildId in discordGuildIdsToVrcDisplayNamesToDiscordRoles.Keys)
     {
         // Find the current Discord Guild's VRC User ID to Discord Role mapping
         Dictionary<string, SocketRole[]> vrcUserIdsToDiscordRoles =
@@ -297,8 +326,8 @@ try
             SocketRole[] discordRoles = vrcUserIdsToDiscordRoles[vrcUserId];
 
             // Map the VRC User to their Discord Guild roles
-            discordGuildIdsToVrcUsersToDiscordRoles[discordGuildId]
-                .Add(user, discordRoles);
+            discordGuildIdsToVrcDisplayNamesToDiscordRoles[discordGuildId]
+                .Add(user.DisplayName, discordRoles);
         }
     }
 }
@@ -312,17 +341,15 @@ catch (ApiException e)
 }
 
 // Combine all unique VRC Display Names across Groups and Discords
-string[] vrcUserDisplayNames = vrcGroupIdsToVrcUsersToVrcRoleIds
+string[] vrcUserDisplayNames = vrcGroupIdsToVrcDisplayNamesToVrcRoleIds
     .SelectMany(g => g.Value.Keys)
-    .Select(u => u.DisplayName)
     .Concat
     (
-        discordGuildIdsToVrcUsersToDiscordRoles.Values
-        .SelectMany(d => d.Keys)
-        .Select(u => u.DisplayName)
+        discordGuildIdsToVrcDisplayNamesToDiscordRoles
+        .SelectMany(d => d.Value.Keys)
     )
     .Distinct()
-    .OrderBy(s => s)
+    .OrderBy(n => n)
     .ToArray();
 
 int GetVrcUserIndex(string displayName) =>
@@ -330,23 +357,24 @@ int GetVrcUserIndex(string displayName) =>
 
 TrackedData data = new()
 {
+    FileTimeUtc = DateTime.Now.ToFileTimeUtc(),
     VrcUserDisplayNames = vrcUserDisplayNames,
-    VrcGroupsById = vrcGroupIdsToVrcUsersToVrcRoleIds
+    VrcGroupsById = vrcGroupIdsToVrcDisplayNamesToVrcRoleIds
         .ToDictionary
         (
             kvp => kvp.Key,
-            kvp => new TrackedData.TrackedVrcGroup
+            kvp => new TrackedVrcGroup
             {
                 Name = vrcGroupIdsToGroupModels[kvp.Key].Name,
                 VrcUsers = kvp.Value.Keys
-                    .Select(u => GetVrcUserIndex(u.DisplayName))
+                    .Select(n => GetVrcUserIndex(n))
                     .Where(i => i != -1)
                     .ToArray(),
                 Roles = vrcGroupIdsToAllVrcRoles[kvp.Key]
                     .ToDictionary
                     (
                         r => r.Id,
-                        r => new TrackedData.TrackedVrcGroup.TrackedVrcGroupRole
+                        r => new TrackedVrcGroupRole
                         {
                             Name = r.Name,
                             IsAdmin = r.Permissions.Contains(VRC_GROUP_OWNER),
@@ -354,35 +382,41 @@ TrackedData data = new()
                                 r.Permissions.Contains(VRC_GROUP_MODERATOR),
                             VrcUsers = kvp.Value
                                 .Where(kvp2 => kvp2.Value.Contains(r.Id))
-                                .Select(kvp2 => GetVrcUserIndex(kvp2.Key.DisplayName))
+                                .Select(kvp2 => GetVrcUserIndex(kvp2.Key))
                                 .ToArray()
                         }
                     )
             }
         ),
-    DiscordServersById = discordGuildIdsToVrcUsersToDiscordRoles.ToDictionary
+    VrcWorldsById = vrcWorldIdsToWorldModels.
+        ToDictionary
+        (
+            kvp => kvp.Key,
+            kvp => new TrackedVrcWorld { Name = kvp.Value.Name }
+        ),
+    DiscordServersById = discordGuildIdsToVrcDisplayNamesToDiscordRoles.ToDictionary
     (
         d => d.Key.ToString(),
-        d => new TrackedData.TrackedDiscordServer
+        d => new TrackedDiscordServer
         {
             Name = discordGuildIdsToDiscordServerNames[d.Key],
-            VrcUsers = discordGuildIdsToVrcUsersToDiscordRoles[d.Key]
-                .Select(m => GetVrcUserIndex(m.Key.DisplayName))
+            VrcUsers = discordGuildIdsToVrcDisplayNamesToDiscordRoles[d.Key]
+                .Select(m => GetVrcUserIndex(m.Key))
                 .Where(i => i != -1)
                 .ToArray(),
             Roles = discordGuildIdsToAllDiscordRoles[d.Key]
                 .ToDictionary
                 (
                     r => r.Id.ToString(),
-                    r => new TrackedData.TrackedDiscordServer.TrackedDiscordServerRole
+                    r => new TrackedDiscordServerRole
                     {
                         Name = r.Name,
                         IsAdmin = r.Permissions.Administrator,
                         IsModerator = r.Permissions.Administrator ||
                             r.Permissions.ModerateMembers,
-                        VrcUsers = discordGuildIdsToVrcUsersToDiscordRoles[d.Key]
+                        VrcUsers = discordGuildIdsToVrcDisplayNamesToDiscordRoles[d.Key]
                             .Where(kvp => kvp.Value.Any(sr => sr.Id == r.Id))
-                            .Select(u => GetVrcUserIndex(u.Key.DisplayName))
+                            .Select(u => GetVrcUserIndex(u.Key))
                             .ToArray()
                     }
                 )
@@ -406,9 +440,6 @@ WriteAllText(dataJsonFile.FullName, dataJsonString);
 WriteLine("Done!");
 Environment.Exit(0);
 
-static async Task WaitSeconds(int seconds) =>
-    await Task.Delay(TimeSpan.FromSeconds(seconds));
-
 static bool TryGetVrcId(IMessage message, out string vrcId)
 {
     // Ensure the content contains a VRC User ID Prefix
@@ -427,3 +458,6 @@ static bool TryGetVrcId(IMessage message, out string vrcId)
     vrcId = candidate.ToLowerInvariant();
     return true;
 }
+
+static async Task WaitSeconds(int seconds) =>
+    await Task.Delay(TimeSpan.FromSeconds(seconds));

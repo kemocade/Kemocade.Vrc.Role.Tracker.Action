@@ -21,6 +21,8 @@ inputs:
     required: true
   groups:
     description: 'VRChat Group ID(s) to track (if more than one, use a comma-delimited string)'
+  worlds:
+    description: 'VRChat World ID(s) to track (if more than one, use a comma-delimited string)'
   bot:
     description: 'Discord Bot Token'
   discords:
@@ -32,9 +34,9 @@ runs:
   using: 'docker'
   image: 'Dockerfile'
   args:
-  - '-w'
+  - '-W'
   - ${{ inputs.workspace }}
-  - '-o'
+  - '-O'
   - ${{ inputs.output }}
   - '-u'
   - ${{ inputs.username }}
@@ -44,6 +46,8 @@ runs:
   - ${{ inputs.key }}
   - '-g'
   - ${{ inputs.groups }}
+  - '-w'
+  - ${{ inputs.worlds }}
   - '-b'
   - ${{ inputs.bot }}
   - '-d'

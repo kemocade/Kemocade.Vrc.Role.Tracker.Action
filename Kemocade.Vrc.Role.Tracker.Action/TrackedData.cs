@@ -2,8 +2,10 @@
 
 internal record TrackedData
 {
+    public required long FileTimeUtc { get; init; }
     public required string[] VrcUserDisplayNames { get; init; }
     public required Dictionary<string, TrackedVrcGroup> VrcGroupsById { get; init; }
+    public required Dictionary<string, TrackedVrcWorld> VrcWorldsById { get; init; }
     public required Dictionary<string, TrackedDiscordServer> DiscordServersById { get; init; }
 
     internal record TrackedVrcGroup
@@ -19,6 +21,11 @@ internal record TrackedData
             public required bool IsModerator { get; init; }
             public required int[] VrcUsers { get; init; }
         }
+    }
+
+    internal record TrackedVrcWorld
+    {
+        public required string Name { get; init; }
     }
 
     internal record TrackedDiscordServer
